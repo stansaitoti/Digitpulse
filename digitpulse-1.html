@@ -1,0 +1,118 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>DigitPulse — 1-Tick Signal Dashboard</title>
+<style>
+:root{--bg:#070b14;--card:#111827;--line:#1f2937;--text:#e5e7eb;--muted:#9ca3af;--cyan:#22d3ee}
+*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--text);font-family:Inter,system-ui,Arial,sans-serif}
+header{display:flex;justify-content:space-between;align-items:center;padding:14px 16px;border-bottom:1px solid var(--line)}
+.brand{font-weight:800;font-size:20px}.brand span{color:var(--cyan)}
+main{max-width:760px;margin:0 auto;padding:16px}
+.card{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:16px;margin-bottom:14px}
+label{display:block;font-size:12px;color:var(--muted);margin-bottom:6px}
+select,input{width:100%;background:#0b1220;color:var(--text);border:1px solid var(--line);border-radius:10px;padding:11px;font-size:15px}
+.row{display:grid;grid-template-columns:1fr 1fr;gap:10px}
+.status{font-size:13px;color:var(--muted);margin-top:8px}
+.countdown{text-align:center;font-size:54px;font-weight:900;color:var(--cyan);line-height:1}
+.small{text-align:center;color:var(--muted);font-size:12px;margin-top:6px}
+.signal{border:1px solid var(--line);border-radius:12px;padding:14px;margin-top:14px;background:#0b1220}
+.signal h2{margin:0;font-size:15px;color:var(--muted)}
+.digit{font-size:46px;font-weight:900;margin:6px 0}
+.stats{display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin-top:10px}
+.stat{background:#111827;border:1px solid var(--line);border-radius:10px;padding:10px;text-align:center}
+.stat b{display:block;font-size:18px}.stat span{font-size:11px;color:var(--muted)}
+button{width:100%;margin-top:14px;background:var(--cyan);border:0;color:#04121a;font-weight:800;padding:14px;border-radius:12px;font-size:16px;cursor:pointer}
+button:disabled{opacity:.5;cursor:not-allowed}
+.heat{display:grid;grid-template-columns:repeat(10,1fr);gap:6px}
+.cell{aspect-ratio:1;display:grid;place-items:center;border-radius:8px;background:#0b1220;border:1px solid var(--line);font-weight:700}
+.ticks{display:flex;flex-wrap:wrap;gap:6px}
+.tick{min-width:34px;text-align:center;padding:7px;border-radius:8px;background:#0b1220;border:1px solid var(--line)}
+.history{font-size:14px}.history div{display:flex;justify-content:space-between;padding:8px 0;border-bottom:1px solid var(--line)}
+.disclaimer{font-size:11px;color:var(--muted);text-align:center;margin-top:10px}
+</style>
+</head>
+<body>
+<header><div class="brand">Digit<span>Pulse</span></div><div id="conn" class="status">Connecting…</div></header>
+<main>
+<section class="card">
+<label>Volatility Index</label>
+<select id="market">
+<option value="R_10">Volatility 10 Index</option><option value="R_25">Volatility 25 Index</option>
+<option value="R_50">Volatility 50 Index</option><option value="R_75">Volatility 75 Index</option>
+<option value="R_100">Volatility 100 Index</option><option value="1HZ10V">Volatility 10 (1s) Index</option>
+<option value="1HZ25V">Volatility 25 (1s) Index</option><option value="1HZ50V">Volatility 50 (1s) Index</option>
+<option value="1HZ75V">Volatility 75 (1s) Index</option><option value="1HZ100V">Volatility 100 (1s) Index</option>
+</select>
+<div class="row" style="margin-top:10px">
+<div><label>Contract</label><select id="contract"><option value="matches">Matches</option><option value="differs">Differs</option></select></div>
+<div><label>Digit</label><select id="digit"></select></div>
+</div>
+<label style="margin-top:10px">Entry time</label><input id="entryTime" type="time" step="1" />
+<div class="status" id="feed">Waiting for ticks…</div>
+</section>
+<section class="card">
+<div class="countdown" id="countdown">--</div>
+<div class="small">Signal locks 10 seconds before entry</div>
+<div class="signal" id="signal" style="display:none">
+<h2>RECOMMENDED DIGIT</h2><div class="digit" id="recDigit">-</div>
+<div class="stats">
+<div class="stat"><b id="absent">-</b><span>Current absence</span></div>
+<div class="stat"><b id="gap">-</b><span>Average gap</span></div>
+<div class="stat"><b id="recent">-</b><span>Hits / last 50</span></div>
+</div></div>
+<button id="startBtn">Start 10-Second Signal</button>
+</section>
+<section class="card"><label>Digit heat map — recent frequency</label><div class="heat" id="heat"></div></section>
+<section class="card"><label>Last 20 ticks</label><div class="ticks" id="ticks"></div></section>
+<section class="card"><label>Signal history</label><div class="history" id="history"><div>No signals yet.</div></div></section>
+<p class="disclaimer">DigitPulse provides statistical tick analysis only. Past patterns do not guarantee future results. Trading involves risk.</p>
+</main>
+<script>
+const APP_ID = "1089";
+const WS_URL = `wss://ws.derivws.com/websockets/v3?app_id=${APP_ID}&l=EN`;
+let ws, ticks = [], timer = null;
+const $ = id => document.getElementById(id);
+for(let i=0;i<=9;i++) $("digit").add(new Option(i,i));
+function connect(){ws=new WebSocket(WS_URL);
+ws.onopen=()=>{$("conn").textContent="Connected";subscribe()};
+ws.onclose=()=>{$("conn").textContent="Disconnected — retrying…";setTimeout(connect,2000)};
+ws.onerror=()=>$("conn").textContent="Connection error";
+ws.onmessage=e=>{const d=JSON.parse(e.data);
+if(d.error){$("conn").textContent="API error: "+d.error.message;return}
+if(d.msg_type==="history"){ticks=d.history.prices.map(lastDigit);render()}
+if(d.msg_type==="tick"){ticks.push(lastDigit(d.tick.quote));if(ticks.length>500)ticks.shift();render()}}}
+function lastDigit(p){const s=p.toString();return Number(s.includes(".")?s.split(".")[1].slice(-1):s.slice(-1))}
+function subscribe(){const symbol=$("market").value;ws.send(JSON.stringify({forget_all:["ticks","history"]}));ws.send(JSON.stringify({ticks_history:symbol,count:500,end:"latest",style:"ticks",subscribe:1}))}
+function counts(){const c=Array(10).fill(0);ticks.forEach(d=>c[d]++);return c}
+function recommend(){const digit=Number($("digit").value),mode=$("contract").value,recent=ticks.slice(-50);
+const hits=recent.filter(x=>x===digit).length;let gaps=[],last=-1;
+ticks.forEach((d,i)=>{if(d===digit){if(last>=0)gaps.push(i-last);last=i}});
+const avgGap=gaps.length?Math.round(gaps.reduce((a,b)=>a+b,0)/gaps.length):0;
+const absent=last>=0?ticks.length-1-last:ticks.length;let rec;
+if(mode==="matches")rec=digit;else{const c=counts();rec=c.indexOf(Math.max(...c));if(rec===digit)rec=(rec+1)%10}
+return{rec,absent,avgGap,hits}}
+function render(){const c=counts(),max=Math.max(...c,1);
+$("heat").innerHTML=c.map((n,i)=>`<div class="cell" style="background:rgba(34,211,238,${0.08+0.55*n/max})">${i}</div>`).join("");
+$("ticks").innerHTML=ticks.slice(-20).reverse().map(d=>`<div class="tick">${d}</div>`).join("");
+$("feed").textContent=`Live ticks received: ${ticks.length} • Market: ${$("market").selectedOptions[0].text}`}
+$("market").addEventListener("change",()=>{ticks=[];render();subscribe()});
+$("startBtn").addEventListener("click",()=>{
+if(!ticks.length)return alert("Waiting for live ticks.");
+const entry=$("entryTime").value;if(!entry)return alert("Choose an entry time.");
+const now=new Date(),[h,m,s]=entry.split(":").map(Number),entryDate=new Date();
+entryDate.setHours(h,m,s,0);if(entryDate<now)entryDate.setDate(entryDate.getDate()+1);
+const signalDate=new Date(entryDate.getTime()-10000),delay=signalDate-now;
+if(delay<0)return alert("Entry time must be more than 10 seconds away.");
+$("startBtn").disabled=true;clearInterval(timer);
+timer=setInterval(()=>{const left=Math.ceil((signalDate-Date.now())/1000);
+$("countdown").textContent=left>0?left:"GO";
+if(left<=10){const r=recommend();$("signal").style.display="block";$("recDigit").textContent=r.rec;$("absent").textContent=r.absent;$("gap").textContent=r.avgGap;$("recent").textContent=`${r.hits} / 50`}
+if(left<=0){clearInterval(timer);$("startBtn").disabled=false;addToHistory(recommend().rec)}},250)});
+function addToHistory(rec){const box=$("history");if(box.textContent.includes("No signals yet"))box.innerHTML="";
+const div=document.createElement("div");div.innerHTML=`<span>${new Date().toLocaleTimeString()} • ${$("contract").value} • Digit ${rec}</span><span>Awaiting result</span>`;box.prepend(div)}
+connect();
+</script>
+</body>
+</html>
